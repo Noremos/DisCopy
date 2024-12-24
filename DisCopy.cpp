@@ -4,7 +4,9 @@
 #include "framework.h"
 #include "DisCopy.h"
 #include <string>
-#include "stb_iamge_write.h"
+#include <memory>
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 
 #define MAX_LOADSTRING 100
@@ -48,7 +50,7 @@ struct Color
 			if (rgb[i] != rhs.rgb[i])
 				return false;
 		}
-	
+
 		return true;
 	}
 
@@ -75,7 +77,9 @@ bool isRunning = false;
 int startNumber = 0;
 
 /// <===================UTILS================>
-std::wstring getText(HWND hwnd) {
+
+std::wstring getText(HWND hwnd)
+{
 	size_t size = SendMessage(hwnd, WM_GETTEXTLENGTH, 0, 0);
 	if (!size) return L"";
 	auto text = std::wstring(size, '\0');
@@ -102,132 +106,106 @@ void setInt(HWND hwnd, int value)
 }
 
 
-// =========================
-// Save a bitmap to a file
-Color SaveBitmapToFile(HDC hdcMemory, HBITMAP hBitmapMemory, const std::wstring& fullPath, Color skipColor)
-{
-	// Get the bitmap info
-	BITMAP bitmap;
-	GetObject(hBitmapMemory, sizeof(BITMAP), &bitmap);
-
-	// Create a bitmap info header
-	BITMAPINFOHEADER bi;
-	bi.biSize = sizeof(BITMAPINFOHEADER);
-	bi.biWidth = bitmap.bmWidth;
-	bi.biHeight = bitmap.bmHeight;
-	bi.biPlanes = 1;
-	bi.biBitCount = 24;
-	bi.biCompression = BI_RGB;
-	bi.biSizeImage = 0;
-	bi.biXPelsPerMeter = 0;
-	bi.biYPelsPerMeter = 0;
-	bi.biClrUsed = 0;
-	bi.biClrImportant = 0;
-
-	// Create a bitmap info
-	BITMAPINFO biInfo;
-	biInfo.bmiHeader = bi;
-
-	// Create a file
-	HANDLE hFile = CreateFile(fullPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-
-	// Write the bitmap info header
-	DWORD dwBytesWritten = 0;
-	WriteFile(hFile, &bi, sizeof(BITMAPINFOHEADER), &dwBytesWritten, NULL);
-
-	// Write the bitmap data
-	BYTE* pBitmapData = new BYTE[bitmap.bmWidth * bitmap.bmHeight * 3];
-	GetDIBits(hdcMemory, hBitmapMemory, 0, bitmap.bmHeight, pBitmapData, &biInfo, DIB_RGB_COLORS);
-
-
-	Color curMiddle;
-	curMiddle.init(pBitmapData + (bitmap.bmWidth * bitmap.bmHeight / 4) * 3);
-
-	if (skipColor != curMiddle)
-		WriteFile(hFile, pBitmapData, bitmap.bmWidth * bitmap.bmHeight * 3, &dwBytesWritten, NULL);
-	// Clean up
-	delete[] pBitmapData;
-	CloseHandle(hFile);
-
-	return curMiddle;
-}
-
 struct Image
 {
-	int width;
-	int height;
-	int channels;
-	std:uniqe_ptr<char> data;
-	void save(std::string path)
+	int width = 0;
+	int height = 0;
+	int channels = 0;
+	std::unique_ptr<unsigned char> data;
+
+	static Image takeScreensht()
 	{
+		Image img;
+		// Get the screen size
+		int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+		int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+
+		// Create a compatible DC
+		HDC hdcScreen = GetDC(NULL);
+		HDC hdcCompatible = CreateCompatibleDC(hdcScreen);
+		HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, screenWidth, screenHeight);
+		HBITMAP hBitmapOld = (HBITMAP)SelectObject(hdcCompatible, hBitmap);
+
+		// Copy the screen to the compatible DC
+		BitBlt(hdcCompatible, 0, 0, screenWidth, screenHeight, hdcScreen, 0, 0, SRCCOPY);
+
+		// Get the bitmap info
+		BITMAP bitmap;
+		GetObject(hBitmap, sizeof(BITMAP), &bitmap);
+
+		// Create a bitmap info header
+		BITMAPINFOHEADER bi;
+		bi.biSize = sizeof(BITMAPINFOHEADER);
+		bi.biWidth = bitmap.bmWidth;
+		bi.biHeight = -bitmap.bmHeight;
+		bi.biPlanes = 1;
+		bi.biBitCount = 24;
+		bi.biCompression = BI_RGB;
+		bi.biSizeImage = 0;
+		bi.biXPelsPerMeter = 0;
+		bi.biYPelsPerMeter = 0;
+		bi.biClrUsed = 0;
+		bi.biClrImportant = 0;
+
+		// Create a bitmap info
+		BITMAPINFO biInfo;
+		biInfo.bmiHeader = bi;
+
+
+		img.width = bitmap.bmWidth;
+		img.height = bitmap.bmHeight;
+		img.channels = bi.biBitCount / 8;
+		img.data.reset(new unsigned char[img.getBytesSize()]);
+		GetDIBits(hdcCompatible, hBitmap, 0, bitmap.bmHeight, img.data.get(), &biInfo, DIB_RGB_COLORS);
+
+		// Clean up
+		SelectObject(hdcCompatible, hBitmapOld);
+		DeleteDC(hdcCompatible);
+		DeleteObject(hBitmap);
+		ReleaseDC(NULL, hdcScreen);
+
+
+
+		return img;
+	}
+
+	void save(std::wstring_view path) const
+	{
+		std::string st(path.begin(), path.end());
+		return save(std::string_view(st));
+	}
+
+	void save(std::string_view path) const
+	{
+		unsigned char* dat = data.get();
+		for (size_t i = 0; i < width * height * channels; i += channels)
+		{
+			// BGR to RGB
+			std::swap(dat[i], dat[i + 2]);
+		}
 		stbi_write_png(path.data(), width, height, channels, data.get(), width * channels);
 	}
+
+	Color get(int x, int y) const
+	{
+		Color c;
+		c.init(data.get() + (x * width + height) * channels);
+		return c;
+	}
+
+	Color getMiddlePixel() const
+	{
+		return get(width / 2, height / 2);
+	}
+
+	size_t getBytesSize() const
+	{
+		return width * height * channels;
+	}
 };
-// ==========
-// Save a screenshot to a file
-Color takeScreenshot(HWND hWnd, const std::wstring& fullFilePath, Color skipColor)
-{
-	// Get the screen size
-	int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-	int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-
-	// Create a compatible DC
-	HDC hdcScreen = GetDC(NULL);
-	HDC hdcCompatible = CreateCompatibleDC(hdcScreen);
-	HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, screenWidth, screenHeight);
-	HBITMAP hBitmapOld = (HBITMAP)SelectObject(hdcCompatible, hBitmap);
-
-	// Copy the screen to the compatible DC
-	BitBlt(hdcCompatible, 0, 0, screenWidth, screenHeight, hdcScreen, 0, 0, SRCCOPY);
-
-	// Get the bitmap info
-	BITMAP bitmap;
-	GetObject(hBitmap, sizeof(BITMAP), &bitmap);
-
-	// Create a bitmap info header
-	BITMAPINFOHEADER bi;
-	bi.biSize = sizeof(BITMAPINFOHEADER);
-	bi.biWidth = bitmap.bmWidth;
-	bi.biHeight = bitmap.bmHeight;
-	bi.biPlanes = 1;
-	bi.biBitCount = 24;
-	bi.biCompression = BI_RGB;
-	bi.biSizeImage = 0;
-	bi.biXPelsPerMeter = 0;
-	bi.biYPelsPerMeter = 0;
-	bi.biClrUsed = 0;
-	bi.biClrImportant = 0;
-
-	// Create a bitmap info
-	BITMAPINFO biInfo;
-	biInfo.bmiHeader = bi;
-
-	BYTE* pBitmapData = new BYTE[bitmap.bmWidth * bitmap.bmHeight * 3];
-	GetDIBits(hdcCompatible, hBitmap, 0, bitmap.bmHeight, pBitmapData, &biInfo, DIB_RGB_COLORS);
-
-	delete[] pBitmapData;
 
 
-	// Create a file
-	//HANDLE hFile = CreateFile(fullPath.c_str(), GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-
-
-	//Color curMiddle = SaveBitmapToFile(hdcCompatible, hBitmap, fullFilePath, skipColor);
-
-	//CloseHandle(hFile);
-
-	// Clean up
-	SelectObject(hdcCompatible, hBitmapOld);
-	DeleteDC(hdcCompatible);
-	DeleteObject(hBitmap);
-	ReleaseDC(NULL, hdcScreen);
-
-	return curMiddle;
-}
-
-
-
-void click()
+static void click()
 {
 	int x = getInt(xInput);
 	int y = getInt(yInput);
@@ -237,33 +215,47 @@ void click()
 }
 
 
+bool firstTake = true;
+bool colorIsMissing = true;
 Color missingColor;
-void pipeline()
+static void pipeline()
 {
+	// Get filename
 	auto folder = getText(savePath);
 	if (folder.back() != '\\' && folder.back() != '/')
 		folder += '\\';
 
-	int value = getInt(startNumberInput);
-	std::wstring filename = folder + std::to_wstring(value) + L".png";
+	const int value = getInt(startNumberInput);
+	const std::wstring filename = folder + std::to_wstring(value) + L".png";
 
-	Color currentColor = SaveScreenshot(window, filename, missingColor);
+	// Take screen
+	Image screen = Image::takeScreensht();
+	if (firstTake)
+	{
+		firstTake = false;
+		screen.save(filename);
+	}
+	else
+	{
+		Color currentColor = screen.getMiddlePixel();
 
-	// Skip if there is no image loaded yet
-	if (currentColor == missingColor)
-		return;
+		// Skip if there is no image loaded yet
+		if (currentColor == missingColor)
+			return;
+	}
 
-	_tprintf(_T("Move to the next iamge\n"));
+	// Move to the next page
 	click();
-	// Set startNumberInput to the next value
 	setInt(startNumberInput, value + 1);
 
-
 	// Get the missing color
-	if (!missingColor.inited)
+	if (colorIsMissing)
 	{
-		Sleep(300);
-		missingColor = SaveScreenshot(window, folder, missingColor);
+		colorIsMissing = false;
+
+		Sleep(100);
+		screen = Image::takeScreensht();
+		missingColor = screen.getMiddlePixel();
 	}
 }
 
@@ -402,7 +394,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
 
 	y += 30;
-	HWND startNumberLabel = CreateWindowW(L"STATIC", L"Start int x:", WS_CHILD | WS_VISIBLE,
+	HWND startNumberLabel = CreateWindowW(L"STATIC", L"Start file number:", WS_CHILD | WS_VISIBLE,
 		10, y, 100, 20, hWnd, NULL, hInstance, NULL);
 	startNumberInput = CreateWindowW(L"EDIT", NULL, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER,
 		120, y, 100, 20, hWnd, NULL, hInstance, NULL);
